@@ -1,0 +1,122 @@
+name: Build OpenCV APK (Zero Config)
+
+on:
+  push:
+    branches: [ "main", "master" ]
+  pull_request:
+    branches: [ "main", "master" ]
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      # 1. Настройка Java + Кэш Gradle
+      - uses: actions/setup-java@v4
+        with:
+          distribution: 'zulu'
+          java-version: '17'
+          cache: 'gradle'
+
+      # 2. Настройка Flutter + Кэш SDK
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: 'stable'
+          flutter-version: '3.19.0'
+          cache: true
+
+      # 3. ГЕНЕРАЦИЯ: Создаем пустой проект в текущей папке
+      - name: Generate Empty Flutter Project
+        run: flutter create . --project-name=opencv_ci_app --org com.bowlmates.app --overwrite
+
+      # 4. ЗАВИСИМОСТИ: Добавляем OpenCV
+      - name: Add OpenCV Dependency
+        run: flutter pub add opencv_4
+
+      # 5. КОД: Создаем main.dart "на лету"
+      - name: Create main.dart with OpenCV Logic
+        run: |
+          cat <<EOF > lib/main.dart
+          import 'package:flutter/material.dart';
+          import 'package:opencv_4/opencv_4.dart';
+          import 'dart:typed_data';
+
+          void main() {
+            runApp(const MaterialApp(home: OpenCVTestApp()));
+          }
+
+          class OpenCVTestApp extends StatefulWidget {
+            const OpenCVTestApp({super.key});
+
+            @override
+            State<OpenCVTestApp> createState() => _OpenCVTestAppState();
+          }
+
+          class _OpenCVTestAppState extends State<OpenCVTestApp> {
+            String _status = 'Инициализация...';
+
+            @override
+            void initState() {
+              super.initState();
+              _checkOpenCV();
+            }
+
+            Future<void> _checkOpenCV() async {
+              try {
+                String? version = await Cv2.cvVersion();
+                setState(() {
+                  _status = 'УСПЕХ!\nOpenCV загружен.\nВерсия: \$version';
+                });
+              } catch (e) {
+                setState(() {
+                  _status = 'ОШИБКА: \$e';
+                });
+              }
+            }
+
+            @override
+            Widget build(BuildContext context) {
+              return Scaffold(
+                appBar: AppBar(title: const Text('Minimal OpenCV Build')),
+                body: Center(
+                  child: Text(
+                    _status,
+                    textAlign: TextAlign.center,
+                    style: const TextStyle(fontSize: 20, fontWeight: FontWeight.bold),
+                  ),
+                ),
+              );
+            }
+          }
+          EOF
+
+      # 6. НАСТРОЙКИ ANDROID: MultiDex и MinSdk
+      # OpenCV требует minSdkVersion 21 и включенный MultiDex
+      - name: Patch build.gradle (MultiDex & MinSdk)
+        run: |
+          # Ставим minSdk 21
+          sed -i 's|minSdkVersion .*|minSdkVersion 21|g' android/app/build.gradle
+          
+          # Включаем MultiDex в конфиг
+          sed -i 's|defaultConfig {|defaultConfig {\n        multiDexEnabled true|g' android/app/build.gradle
+          
+          # Добавляем зависимость MultiDex
+          sed -i 's|dependencies {|dependencies {\n    implementation "androidx.multidex:multidex:2.0.1"|g' android/app/build.gradle
+          
+          echo "Android build files patched successfully."
+
+      - name: Get Dependencies
+        run: flutter pub get
+
+      # 7. СБОРКА
+      - name: Build APK
+        run: flutter build apk --release --no-tree-shake-icons
+
+      # 8. ЗАГРУЗКА РЕЗУЛЬТАТА
+      - name: Upload APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: opencv-app-release
+          path: build/app/outputs/flutter-apk/app-release.apk
